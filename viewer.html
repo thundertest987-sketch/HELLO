@@ -1,112 +1,112 @@
 
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Private Camera Viewer</title>
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
-    body { font: 16px Arial, sans-serif; max-width: 800px; margin: 30px auto; padding: 16px; }
-    button { padding: 10px 14px; margin: 6px 4px 6px 0; }
-    video { width: 100%; background: #111; margin-top: 12px; }
-    code { overflow-wrap: anywhere; }
+    body { font: 16px system-ui; max-width: 760px; margin: 32px auto; padding: 0 16px; }
+    video { width: 100%; background: #111; border-radius: 12px; }
+    input, button { font: inherit; padding: 10px; margin: 6px 0; }
+    #status { padding: 10px 0; }
   </style>
 </head>
 <body>
-  <h2>Camera Viewer — Laptop</h2>
-  <p>Live viewing only. No recording is performed.</p>
-
-  <button id="create">Create viewer session</button>
-  <p>Status: <span id="status">Not connected</span></p>
-  <p>Viewer ID: <code id="viewerId">Not created</code></p>
-  <p>Pairing code: <code id="pairCode">Not created</code></p>
-
-  <p>On your phone, open the fixed streaming link and enter the ID and pairing code above.</p>
-  <video id="video" autoplay playsinline controls></video>
-  <button id="stop">Stop viewer</button>
+  <h1>Private Camera Viewer</h1>
+  <p>Enter the viewer secret configured for your Worker. Do not share it.</p>
+  <input id="secret" type="password" autocomplete="off"
+         placeholder="Viewer secret" style="width: min(95%, 420px)">
+  <button id="connect">Connect</button>
+  <button id="stop" disabled>Disconnect</button>
+  <p id="status" role="status">Disconnected</p>
+  <video id="video" autoplay playsinline></video>
 
 <script>
-(() => {
-  let peer = null;
-  let activeCall = null;
-  let pairingCode = null;
+const API = "https://private-camera-signal.thundertest987.workers.dev";
+const status = document.getElementById("status");
+const video = document.getElementById("video");
+let socket, pc;
 
-  const $ = id => document.getElementById(id);
-  const setStatus = message => $("status").textContent = message;
+function say(message) { status.textContent = message; }
 
-  function stopViewer() {
-    pairingCode = null;
+async function connect() {
+  document.getElementById("connect").disabled = true;
+  const secretInput = document.getElementById("secret");
+  const secret = secretInput.value;
+  secretInput.value = "";
 
-    if (activeCall) {
-      activeCall.close();
-      activeCall = null;
-    }
-
-    if (peer) {
-      peer.destroy();
-      peer = null;
-    }
-
-    $("video").srcObject = null;
-    $("viewerId").textContent = "Not created";
-    $("pairCode").textContent = "Not created";
-    setStatus("Viewer stopped.");
-  }
-
-  $("create").onclick = () => {
-    stopViewer();
-
-    pairingCode = Array.from(
-      crypto.getRandomValues(new Uint8Array(16)),
-      b => b.toString(16).padStart(2, "0")
-    ).join("");
-
-    setStatus("Connecting to signaling service...");
-    peer = new Peer();
-
-    peer.on("open", id => {
-      $("viewerId").textContent = id;
-      $("pairCode").textContent = pairingCode;
-      setStatus("Ready. Enter the ID and code on your phone.");
+  try {
+    const response = await fetch(API + "/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "viewer", secret })
     });
+    if (!response.ok) throw new Error("Viewer authorization failed");
+    const { token } = await response.json();
 
-    peer.on("call", call => {
-      if (!pairingCode || call.metadata?.token !== pairingCode) {
-        call.close();
-        return;
+    socket = new WebSocket(API.replace(/^https:/, "wss:") + "/session");
+    socket.onopen = () => socket.send(JSON.stringify({ type: "auth", token }));
+    socket.onmessage = async event => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === "ready") {
+        say("Authorized. Waiting for your phone.");
+        document.getElementById("stop").disabled = false;
       }
+      if (msg.type === "peer-ready") {
+        await makeOffer();
+      }
+      if (msg.type === "answer" && pc) {
+        await pc.setRemoteDescription(msg.data);
+      }
+      if (msg.type === "ice" && pc && msg.data) {
+        try { await pc.addIceCandidate(msg.data); } catch {}
+      }
+      if (msg.type === "peer-left") say("Phone disconnected.");
+      if (msg.type === "hangup") say("Phone stopped streaming.");
+    };
+    socket.onerror = () => say("Connection error. Check your Worker.");
+    socket.onclose = () => say("Disconnected.");
+  } catch (error) {
+    say(error.message || "Could not connect.");
+    document.getElementById("connect").disabled = false;
+  }
+}
 
-      if (activeCall) activeCall.close();
-      activeCall = call;
-      call.answer();
-
-      call.on("stream", mediaStream => {
-        if (activeCall !== call) return;
-        $("video").srcObject = mediaStream;
-        $("video").play().catch(() => {});
-        setStatus("Live stream connected.");
-      });
-
-      call.on("close", () => {
-        if (activeCall === call) {
-          activeCall = null;
-          $("video").srcObject = null;
-          setStatus("Stream ended.");
-        }
-      });
-
-      call.on("error", () => setStatus("Stream connection failed."));
-    });
-
-    peer.on("error", error =>
-      setStatus("Connection error: " + error.type)
-    );
+async function makeOffer() {
+  if (pc) pc.close();
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  });
+  pc.ontrack = event => { video.srcObject = event.streams[0]; };
+  pc.onicecandidate = event => {
+    if (event.candidate && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "ice", data: event.candidate }));
+    }
   };
+  pc.addTransceiver("video", { direction: "recvonly" });
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.send(JSON.stringify({ type: "offer", data: pc.localDescription }));
+  say("Offer sent. Waiting for phone to start streaming.");
+}
 
-  $("stop").onclick = stopViewer;
-  window.addEventListener("pagehide", stopViewer);
-})();
+function disconnect() {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "hangup" }));
+    socket.close();
+  }
+  if (pc) pc.close();
+  pc = null;
+  socket = null;
+  video.srcObject = null;
+  document.getElementById("connect").disabled = false;
+  document.getElementById("stop").disabled = true;
+  say("Disconnected.");
+}
+
+document.getElementById("connect").onclick = connect;
+document.getElementById("stop").onclick = disconnect;
 </script>
 </body>
 </html>
