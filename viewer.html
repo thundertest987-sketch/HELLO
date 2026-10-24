@@ -1,89 +1,112 @@
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Private Camera Viewer</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { font: 16px Arial, sans-serif; max-width: 800px; margin: 30px auto; padding: 16px; }
+    button { padding: 10px 14px; margin: 6px 4px 6px 0; }
+    video { width: 100%; background: #111; margin-top: 12px; }
+    code { overflow-wrap: anywhere; }
+  </style>
 </head>
 <body>
   <h2>Camera Viewer — Laptop</h2>
-  <p>Keep this page open while viewing. No recording is performed.</p>
-  <button id="create">Create viewing session</button>
-  <p id="status">No session created.</p>
-  <p><a id="streamLink" hidden>Open phone streaming page</a></p>
-  <video id="video" autoplay playsinline controls
-         style="width:100%;max-width:800px;background:#111"></video>
+  <p>Live viewing only. No recording is performed.</p>
+
+  <button id="create">Create viewer session</button>
+  <p>Status: <span id="status">Not connected</span></p>
+  <p>Viewer ID: <code id="viewerId">Not created</code></p>
+  <p>Pairing code: <code id="pairCode">Not created</code></p>
+
+  <p>On your phone, open the fixed streaming link and enter the ID and pairing code above.</p>
+  <video id="video" autoplay playsinline controls></video>
   <button id="stop">Stop viewer</button>
 
 <script>
-let peer, activeCall, token;
-const $ = id => document.getElementById(id);
-const status = text => $("status").textContent = text;
+(() => {
+  let peer = null;
+  let activeCall = null;
+  let pairingCode = null;
 
-$("create").onclick = () => {
-  if (peer) peer.destroy();
-  $("video").srcObject = null;
-  $("streamLink").hidden = true;
+  const $ = id => document.getElementById(id);
+  const setStatus = message => $("status").textContent = message;
 
-  token = Array.from(crypto.getRandomValues(new Uint8Array(24)),
-    b => b.toString(16).padStart(2, "0")).join("");
+  function stopViewer() {
+    pairingCode = null;
 
-  status("Connecting to signaling service...");
-  peer = new Peer();
-
-  peer.on("open", id => {
-    const url = new URL("stream.html", location.href);
-    url.searchParams.set("viewer", id);
-    url.searchParams.set("token", token);
-
-    $("streamLink").href = url.href;
-    $("streamLink").textContent =
-      "Open or copy this temporary phone streaming link";
-    $("streamLink").hidden = false;
-    status("Ready. Open the link on your phone and tap Start Streaming.");
-  });
-
-  peer.on("call", call => {
-    if (!token || call.metadata?.token !== token) {
-      call.close();
-      return;
+    if (activeCall) {
+      activeCall.close();
+      activeCall = null;
     }
 
-    if (activeCall) activeCall.close();
-    activeCall = call;
-    call.answer();
+    if (peer) {
+      peer.destroy();
+      peer = null;
+    }
 
-    call.on("stream", media => {
-      if (activeCall !== call) return;
-      $("video").srcObject = media;
-      $("video").play().catch(() => {});
-      status("Live stream connected.");
+    $("video").srcObject = null;
+    $("viewerId").textContent = "Not created";
+    $("pairCode").textContent = "Not created";
+    setStatus("Viewer stopped.");
+  }
+
+  $("create").onclick = () => {
+    stopViewer();
+
+    pairingCode = Array.from(
+      crypto.getRandomValues(new Uint8Array(16)),
+      b => b.toString(16).padStart(2, "0")
+    ).join("");
+
+    setStatus("Connecting to signaling service...");
+    peer = new Peer();
+
+    peer.on("open", id => {
+      $("viewerId").textContent = id;
+      $("pairCode").textContent = pairingCode;
+      setStatus("Ready. Enter the ID and code on your phone.");
     });
 
-    call.on("close", () => {
-      if (activeCall === call) {
-        activeCall = null;
-        $("video").srcObject = null;
-        status("Stream ended.");
+    peer.on("call", call => {
+      if (!pairingCode || call.metadata?.token !== pairingCode) {
+        call.close();
+        return;
       }
+
+      if (activeCall) activeCall.close();
+      activeCall = call;
+      call.answer();
+
+      call.on("stream", mediaStream => {
+        if (activeCall !== call) return;
+        $("video").srcObject = mediaStream;
+        $("video").play().catch(() => {});
+        setStatus("Live stream connected.");
+      });
+
+      call.on("close", () => {
+        if (activeCall === call) {
+          activeCall = null;
+          $("video").srcObject = null;
+          setStatus("Stream ended.");
+        }
+      });
+
+      call.on("error", () => setStatus("Stream connection failed."));
     });
-  });
 
-  peer.on("error", e => status("Connection error: " + e.type));
-};
+    peer.on("error", error =>
+      setStatus("Connection error: " + error.type)
+    );
+  };
 
-$("stop").onclick = () => {
-  token = null;
-  if (activeCall) activeCall.close();
-  activeCall = null;
-  if (peer) peer.destroy();
-  peer = null;
-  $("video").srcObject = null;
-  $("streamLink").hidden = true;
-  status("Viewer stopped.");
-};
+  $("stop").onclick = stopViewer;
+  window.addEventListener("pagehide", stopViewer);
+})();
 </script>
 </body>
 </html>
