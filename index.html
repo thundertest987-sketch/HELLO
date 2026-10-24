@@ -1,48 +1,54 @@
 
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mobile Permission Lab</title>
+  <title>Local Camera Preview Lab</title>
 </head>
 <body>
-  <h2>Mobile Permission Lab</h2>
-  <p>No recording, saving, or uploading.</p>
+  <h2>Local Camera Preview Lab</h2>
+  <p>Preview only. No recording or uploading.</p>
 
-  <button id="camera">Test camera permission</button>
-  <button id="mic">Test microphone permission</button>
-  <p id="status">Ready to test.</p>
+  <button id="start">Start camera preview</button>
+  <button id="stop">Stop camera</button>
+
+  <p id="status">Camera stopped.</p>
+  <video id="preview" autoplay playsinline
+         muted style="width:100%;max-width:480px"></video>
 
   <script>
-    async function testSensor(kind) {
-      const status = document.getElementById("status");
+    let stream = null;
+    const video = document.getElementById("preview");
+    const status = document.getElementById("status");
 
-      if (!navigator.mediaDevices?.getUserMedia) {
-        status.textContent =
-          "Unavailable. Use HTTPS and a supported browser.";
-        return;
-      }
-
+    document.getElementById("start").onclick = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: kind === "camera",
-          audio: kind === "mic"
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: false
         });
 
-        stream.getTracks().forEach(track => track.stop());
+        video.srcObject = stream;
         status.textContent =
-          "Permission granted. All media tracks stopped. Nothing recorded or uploaded.";
-      } catch (e) {
-        status.textContent = "Access not granted: " + e.name;
+          "Camera active. Preview is local to this page.";
+      } catch (error) {
+        status.textContent =
+          "Camera unavailable: " + error.name;
       }
+    };
+
+    function stopCamera() {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      video.srcObject = null;
+      status.textContent = "Camera stopped.";
     }
 
-    document.getElementById("camera").onclick =
-      () => testSensor("camera");
-
-    document.getElementById("mic").onclick =
-      () => testSensor("mic");
+    document.getElementById("stop").onclick = stopCamera;
+    window.addEventListener("pagehide", stopCamera);
   </script>
 </body>
 </html>
