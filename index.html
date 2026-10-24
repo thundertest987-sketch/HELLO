@@ -4,51 +4,218 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Camera Preview Lab</title>
+  <title>Private Camera Lab</title>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    body { font: 16px system-ui; max-width: 650px; margin: 30px auto; padding: 16px; }
+    button, input { padding: 12px; margin: 6px 0; max-width: 100%; }
+    input { width: 95%; }
+    video { width: 100%; background: #111; margin-top: 12px; }
+    #details { overflow-wrap: anywhere; }
+  </style>
 </head>
 <body>
-  <h2>Local Camera Preview Lab</h2>
-  <p>Preview only. No recording or uploading.</p>
+  <h2>Private Camera Lab</h2>
+  <p>Live video only. No recording or uploading. Use only devices you own or are authorized to monitor.</p>
 
-  <button id="start">Start camera preview</button>
-  <button id="stop">Stop camera</button>
+  <button id="viewerMode">Set up laptop viewer</button>
+  <button id="cameraMode">Set up phone camera</button>
 
-  <p id="status">Camera stopped.</p>
-  <video id="preview" autoplay playsinline
-         muted style="width:100%;max-width:480px"></video>
+  <section id="viewer" hidden>
+    <h3>Laptop viewer</h3>
+    <p>Keep this page open. Enter these temporary details on your phone.</p>
+    <p>Viewer ID:</p>
+    <code id="peerId">Creating...</code>
+    <p>One-time pairing code:</p>
+    <code id="pairCode"></code>
+    <p id="viewerStatus">Waiting for the phone...</p>
+    <video id="remoteVideo" autoplay playsinline controls></video>
+    <button id="stopViewer">Stop viewer</button>
+  </section>
 
-  <script>
-    let stream = null;
-    const video = document.getElementById("preview");
-    const status = document.getElementById("status");
+  <section id="camera" hidden>
+    <h3>Phone camera</h3>
+    <label for="targetId">Laptop viewer ID</label>
+    <input id="targetId" autocomplete="off" placeholder="Paste viewer ID">
 
-    document.getElementById("start").onclick = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: false
-        });
+    <label for="token">One-time pairing code</label>
+    <input id="token" autocomplete="off" placeholder="Enter pairing code">
 
-        video.srcObject = stream;
-        status.textContent =
-          "Camera active. Preview is local to this page.";
-      } catch (error) {
-        status.textContent =
-          "Camera unavailable: " + error.name;
+    <p>Camera stays off until you press Start.</p>
+    <button id="startCamera">Start and send camera</button>
+    <button id="stopCamera">Stop streaming</button>
+    <p id="cameraStatus">Camera stopped.</p>
+  </section>
+
+<script>
+(() => {
+  let peer = null;
+  let stream = null;
+  let activeCall = null;
+  let expectedToken = null;
+  let mode = null;
+
+  const $ = id => document.getElementById(id);
+
+  function status(id, message) {
+    $(id).textContent = message;
+  }
+
+  function closePeer() {
+    if (activeCall) {
+      activeCall.close();
+      activeCall = null;
+    }
+    if (peer) {
+      peer.destroy();
+      peer = null;
+    }
+  }
+
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+    closePeer();
+    status("cameraStatus", "Streaming stopped; camera tracks released.");
+  }
+
+  $("viewerMode").onclick = async () => {
+    closePeer();
+    mode = "viewer";
+    $("viewer").hidden = false;
+    $("camera").hidden = true;
+    $("remoteVideo").srcObject = null;
+    expectedToken = Array.from(
+      crypto.getRandomValues(new Uint8Array(16)),
+      b => b.toString(16).padStart(2, "0")
+    ).join("");
+
+    $("pairCode").textContent = expectedToken;
+    status("viewerStatus", "Connecting to signaling service...");
+    peer = new Peer();
+
+    peer.on("open", id => {
+      $("peerId").textContent = id;
+      status("viewerStatus", "Ready. Enter the ID and code on your phone.");
+    });
+
+    peer.on("call", call => {
+      if (mode !== "viewer" ||
+          !expectedToken ||
+          call.metadata?.token !== expectedToken) {
+        call.close();
+        return;
       }
-    };
 
-    function stopCamera() {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-        stream = null;
-      }
-      video.srcObject = null;
-      status.textContent = "Camera stopped.";
+      activeCall = call;
+      status("viewerStatus", "Authenticated pairing; connecting video...");
+      call.answer();
+
+      call.on("stream", remoteStream => {
+        if (activeCall !== call) return;
+        $("remoteVideo").srcObject = remoteStream;
+        $("remoteVideo").play().catch(() => {});
+        status("viewerStatus", "Live camera stream connected.");
+      });
+
+      call.on("close", () => {
+        if (activeCall === call) {
+          activeCall = null;
+          $("remoteVideo").srcObject = null;
+          status("viewerStatus", "Stream ended.");
+        }
+      });
+
+      call.on("error", () =>
+        status("viewerStatus", "Call failed. Check network connectivity.")
+      );
+    });
+
+    peer.on("error", err =>
+      status("viewerStatus", "Connection error: " + err.type)
+    );
+  };
+
+  $("cameraMode").onclick = () => {
+    stopCamera();
+    mode = "camera";
+    $("camera").hidden = false;
+    $("viewer").hidden = true;
+  };
+
+  $("startCamera").onclick = async () => {
+    if (stream) return;
+
+    const targetId = $("targetId").value.trim();
+    const token = $("token").value.trim();
+
+    if (!targetId || !/^[a-f0-9]{32}$/.test(token)) {
+      status("cameraStatus", "Enter the viewer ID and complete pairing code.");
+      return;
     }
 
-    document.getElementById("stop").onclick = stopCamera;
-    window.addEventListener("pagehide", stopCamera);
-  </script>
+    try {
+      status("cameraStatus", "Requesting camera permission...");
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false
+      });
+
+      status("cameraStatus", "Camera active. Connecting to laptop...");
+
+      peer = new Peer();
+
+      peer.on("open", () => {
+        if (!stream) return;
+
+        activeCall = peer.call(targetId, stream, {
+          metadata: { token }
+        });
+
+        if (!activeCall) {
+          status("cameraStatus", "Could not start connection.");
+          stopCamera();
+          return;
+        }
+
+        activeCall.on("stream", () => {});
+        activeCall.on("close", () => {
+          if (stream) stopCamera();
+        });
+        activeCall.on("error", () => {
+          status("cameraStatus", "Connection failed. Stop and retry.");
+        });
+
+        status("cameraStatus", "Camera active; attempting live connection.");
+      });
+
+      peer.on("error", err => {
+        status("cameraStatus", "Connection error: " + err.type);
+        stopCamera();
+      });
+    } catch (e) {
+      status("cameraStatus", "Camera unavailable: " + e.name);
+      stopCamera();
+    }
+  };
+
+  $("stopCamera").onclick = stopCamera;
+
+  $("stopViewer").onclick = () => {
+    expectedToken = null;
+    closePeer();
+    $("remoteVideo").srcObject = null;
+    status("viewerStatus", "Viewer stopped.");
+  };
+
+  window.addEventListener("pagehide", () => {
+    stopCamera();
+    expectedToken = null;
+    closePeer();
+  });
+})();
+</script>
 </body>
 </html>
