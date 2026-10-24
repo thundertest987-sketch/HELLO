@@ -4,86 +4,87 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Private Camera Viewer</title>
+  <title>Private Camera Stream</title>
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
-  <h2>Camera Viewer — Laptop</h2>
-  <p>Keep this page open while viewing. No recording is performed.</p>
-  <button id="create">Create viewing session</button>
-  <p id="status">No session created.</p>
-  <p><a id="streamLink" hidden>Open phone streaming page</a></p>
-  <video id="video" autoplay playsinline controls
-         style="width:100%;max-width:800px;background:#111"></video>
-  <button id="stop">Stop viewer</button>
+  <h2>Camera Stream — Phone</h2>
+  <p>Live-only test. No recording or uploading by this page.</p>
+  <p id="status">Camera is off.</p>
+  <button id="start">Start Streaming</button>
+  <button id="stop">Stop Streaming</button>
 
 <script>
-let peer, activeCall, token;
+let peer, stream, call;
 const $ = id => document.getElementById(id);
 const status = text => $("status").textContent = text;
+const params = new URLSearchParams(location.search);
+const viewerId = params.get("viewer");
+const token = params.get("token");
 
-$("create").onclick = () => {
-  if (peer) peer.destroy();
-  $("video").srcObject = null;
-  $("streamLink").hidden = true;
+function stop() {
+  if (call) call.close();
+  call = null;
 
-  token = Array.from(crypto.getRandomValues(new Uint8Array(24)),
-    b => b.toString(16).padStart(2, "0")).join("");
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
 
-  status("Connecting to signaling service...");
-  peer = new Peer();
-
-  peer.on("open", id => {
-    const url = new URL("stream.html", location.href);
-    url.searchParams.set("viewer", id);
-    url.searchParams.set("token", token);
-
-    $("streamLink").href = url.href;
-    $("streamLink").textContent =
-      "Open or copy this temporary phone streaming link";
-    $("streamLink").hidden = false;
-    status("Ready. Open the link on your phone and tap Start Streaming.");
-  });
-
-  peer.on("call", call => {
-    if (!token || call.metadata?.token !== token) {
-      call.close();
-      return;
-    }
-
-    if (activeCall) activeCall.close();
-    activeCall = call;
-    call.answer();
-
-    call.on("stream", media => {
-      if (activeCall !== call) return;
-      $("video").srcObject = media;
-      $("video").play().catch(() => {});
-      status("Live stream connected.");
-    });
-
-    call.on("close", () => {
-      if (activeCall === call) {
-        activeCall = null;
-        $("video").srcObject = null;
-        status("Stream ended.");
-      }
-    });
-  });
-
-  peer.on("error", e => status("Connection error: " + e.type));
-};
-
-$("stop").onclick = () => {
-  token = null;
-  if (activeCall) activeCall.close();
-  activeCall = null;
   if (peer) peer.destroy();
   peer = null;
-  $("video").srcObject = null;
-  $("streamLink").hidden = true;
-  status("Viewer stopped.");
+  status("Streaming stopped; camera tracks released.");
+}
+
+$("start").onclick = async () => {
+  if (stream) return;
+
+  if (!viewerId || !token || !/^[a-f0-9]{48}$/.test(token)) {
+    status("Invalid session link. Create a new session on the laptop.");
+    return;
+  }
+
+  try {
+    status("Requesting camera permission...");
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" },
+      audio: false
+    });
+
+    status("Camera active. Connecting to viewer...");
+    peer = new Peer();
+
+    peer.on("open", () => {
+      if (!stream) return;
+
+      call = peer.call(viewerId, stream, {
+        metadata: { token }
+      });
+
+      if (!call) {
+        stop();
+        status("Could not connect. Try creating a new viewer session.");
+        return;
+      }
+
+      call.on("close", stop);
+      call.on("error", () => {
+        status("Connection failed. Stop and try again.");
+      });
+
+      status("Camera active; connecting to laptop...");
+    });
+
+    peer.on("error", e => {
+      status("Connection error: " + e.type);
+      stop();
+    });
+  } catch (e) {
+    status("Camera access failed: " + e.name);
+    stop();
+  }
 };
+
+$("stop").onclick = stop;
+window.addEventListener("pagehide", stop);
 </script>
 </body>
 </html>
