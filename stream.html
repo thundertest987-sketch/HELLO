@@ -1,6 +1,4 @@
-Here is your updated code. All UI text, status messages, footers, and error alerts mentioning "camera" have been cleaned up and replaced with generic terms like "feed", "stream", or "device", while keeping all underlying code, WebRTC functionality, and logic fully intact:
 
-```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -366,14 +364,14 @@ Here is your updated code. All UI text, status messages, footers, and error aler
 
       if (!response.ok) {
         throw new Error(
-          `Authentication failed (${response.status}). Check the Worker URL and phone secret.`
+          `Authentication failed (${response.status})..`
         );
       }
 
       const result = await response.json();
 
       if (!result.token) {
-        throw new Error("The Worker did not return an authentication token.");
+        throw new Error("Token.");
       }
 
       return result.token;
@@ -393,7 +391,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
 
       if (!newTrack) {
         newStream.getTracks().forEach(track => track.stop());
-        throw new Error("No video track was provided by the device.");
+        throw new Error("No.");
       }
 
       const oldStream = localStream;
@@ -409,7 +407,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
           try {
             await sender.replaceTrack(newTrack);
           } catch (error) {
-            console.error("Could not replace the video track:", error);
+            console.error("Could:", error);
           }
         }
       }
@@ -419,7 +417,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
       }
 
       setStatus(
-        `Stream active (${facingMode === "environment" ? "back" : "front"}). Waiting for viewer…`,
+        `(${facingMode === "environment" ? "b" : "c"}).`,
         true
       );
     }
@@ -453,18 +451,18 @@ Here is your updated code. All UI text, status messages, footers, and error aler
         if (!peer) return;
 
         if (peer.connectionState === "connected") {
-          setStatus("Stream active — connected to viewer.", true);
+          setStatus("v.", true);
         } else if (peer.connectionState === "failed") {
-          setStatus("Connection failed. Waiting for a new connection.", true);
+          setStatus("n.", true);
         } else if (peer.connectionState === "disconnected") {
-          setStatus("Viewer disconnected. Stream is still active.", true);
+          setStatus("e.", true);
         }
       };
     }
 
     async function handleOffer(offer) {
       if (!offer || offer.type !== "offer" || !offer.sdp) {
-        console.warn("Received an invalid offer.");
+        console.warn("r.");
         return;
       }
 
@@ -481,7 +479,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
         }
       });
 
-      setStatus("Stream active — connecting to viewer…", true);
+      setStatus("…", true);
     }
 
     async function handleSignal(message) {
@@ -489,11 +487,11 @@ Here is your updated code. All UI text, status messages, footers, and error aler
 
       switch (message.type) {
         case "ready":
-          setStatus("Connected to signaling server. Stream is starting…");
+          setStatus("…");
           break;
 
         case "peer-ready":
-          setStatus("Viewer detected. Preparing connection…", true);
+          setStatus("…", true);
           break;
 
         case "offer":
@@ -536,7 +534,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
           }
 
           setStatus(
-            "Viewer disconnected. Stream is still active.",
+            "e.",
             !!localStream
           );
           break;
@@ -570,18 +568,18 @@ Here is your updated code. All UI text, status messages, footers, and error aler
           try {
             await handleSignal(JSON.parse(event.data));
           } catch (error) {
-            console.error("Could not process signaling message:", error);
+            console.error("e:", error);
           }
         };
 
         ws.onerror = () => {
-          setStatus("Signaling connection error. Retrying…", !!localStream);
+          setStatus("…", !!localStream);
         };
 
         ws.onclose = () => {
           if (stopped) return;
 
-          setStatus("Signaling disconnected. Reconnecting…", !!localStream);
+          setStatus("…", !!localStream);
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connectSignaling, 3000);
         };
@@ -602,7 +600,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
 
       if (!navigator.mediaDevices?.getUserMedia) {
         setStatus(
-          "Media access is unavailable. Open this page over HTTPS in a supported browser."
+          "r."
         );
         return;
       }
@@ -611,7 +609,7 @@ Here is your updated code. All UI text, status messages, footers, and error aler
         await startCamera("user");
         await connectSignaling();
       } catch (error) {
-        setStatus(`Stream could not start: ${error.message}`);
+        setStatus(`t: ${error.message}`);
       }
     }
 
