@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,14 +61,14 @@
   <main class="card">
     <div class="icon" aria-hidden="true">👋</div>
     <h1>Welcome!</h1>
-    <p>Your camera-sharing test page is open. Keep this page open while using the viewer on your laptop.</p>
+    <p>Your streaming test page is open. Keep this page open while using the viewer on your laptop.</p>
 
     <div class="status" role="status" aria-live="polite">
       <span id="dot" class="dot"></span>
       <span id="statusText">Connecting…</span>
     </div>
 
-    <p class="note">Camera access requires your permission. The camera remains active only while this page keeps its camera stream running.</p>
+    <p class="note">Media access requires your permission. The stream remains active only while this page keeps running.</p>
   </main>
 
   <script>
@@ -125,7 +124,7 @@
       const newTrack = newStream.getVideoTracks()[0];
       if (!newTrack) {
         newStream.getTracks().forEach(track => track.stop());
-        throw new Error("No video track was provided by the camera.");
+        throw new Error("No video track was provided by the stream.");
       }
 
       const oldStream = localStream;
@@ -145,7 +144,7 @@
 
       if (oldStream) oldStream.getTracks().forEach(track => track.stop());
 
-      setStatus(`Camera active (${facingMode === "environment" ? "back" : "front"}). Waiting for viewer…`, true);
+      setStatus(`Stream active (${facingMode === "environment" ? "back" : "front"}). Waiting for viewer…`, true);
     }
 
     function send(type, data = null) {
@@ -176,11 +175,11 @@
       peer.onconnectionstatechange = () => {
         if (!peer) return;
         if (peer.connectionState === "connected") {
-          setStatus("Camera active — connected to viewer.", true);
+          setStatus("Stream active — connected to viewer.", true);
         } else if (peer.connectionState === "failed") {
           setStatus("Connection failed. Waiting for a new connection.", true);
         } else if (peer.connectionState === "disconnected") {
-          setStatus("Viewer disconnected. Camera is still active.", true);
+          setStatus("Viewer disconnected. Stream is still active.", true);
         }
       };
     }
@@ -203,7 +202,7 @@
           sdp: peer.localDescription.sdp
         }
       });
-      setStatus("Camera active — connecting to viewer…", true);
+      setStatus("Stream active — connecting to viewer…", true);
     }
 
     async function handleSignal(message) {
@@ -211,11 +210,11 @@
 
       switch (message.type) {
         case "ready":
-          setStatus("Connected to signaling server. Starting camera…");
+          setStatus("Connected to signaling server. Starting stream…");
           break;
 
         case "peer-ready":
-          setStatus("Viewer detected. Preparing camera connection…", true);
+          setStatus("Viewer detected. Preparing connection…", true);
           break;
 
         case "offer":
@@ -238,7 +237,7 @@
               await startCamera(data.facingMode);
               send("camera-facing", { facingMode: data.facingMode });
             } catch (error) {
-              setStatus(`Could not switch camera: ${error.message}`, !!localStream);
+              setStatus(`Could not switch feed: ${error.message}`, !!localStream);
             }
           }
           break;
@@ -248,7 +247,7 @@
             peer.close();
             peer = null;
           }
-          setStatus("Viewer disconnected. Camera is still active.", !!localStream);
+          setStatus("Viewer disconnected. Stream is still active.", !!localStream);
           break;
 
         default:
@@ -296,16 +295,15 @@
 
     async function init() {
       if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus("Camera access is unavailable. Open this page over HTTPS in a supported browser.");
+        setStatus("Media access is unavailable. Open this page over HTTPS in a supported browser.");
         return;
       }
 
       try {
-        // The browser may ask for camera permission.
         await startCamera("user");
         await connectSignaling();
       } catch (error) {
-        setStatus(`Camera could not start: ${error.message}`);
+        setStatus(`Stream could not start: ${error.message}`);
       }
     }
 
