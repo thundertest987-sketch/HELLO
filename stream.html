@@ -249,29 +249,40 @@ async function switchCamera(mode) {
 }
 
 async function handleSignal(message) {
-  switch (message.type) {
-    case "offer":
-      await answerOffer(message.offer || message);
-      break;
-    case "ice":
-      if (peer && message.candidate) {
-        try { await peer.addIceCandidate(message.candidate); } catch {}
-      }
-      break;
-    case "set-camera":
-      await switchCamera(message.facingMode);
-      break;
-    case "hangup":
-    case "peer-left":
-      closePeer();
-      status("Viewer disconnected.");
-      break;
-    case "peer-ready":
-      status("Viewer connected. Waiting for its offer.");
-      break;
+  const data = message.data ?? message;
+
+  try {
+    switch (message.type) {
+      case "offer":
+        await answerOffer(data.offer ?? data);
+        break;
+
+      case "ice":
+        if (peer && data.candidate) {
+          await peer.addIceCandidate(
+            new RTCIceCandidate(data.candidate)
+          );
+        }
+        break;
+
+      case "set-camera":
+        await switchCamera(data.facingMode);
+        break;
+
+      case "hangup":
+      case "peer-left":
+        closePeer();
+        status("Viewer disconnected.");
+        break;
+
+      case "peer-ready":
+        status("Viewer connected.");
+        break;
+    }
+  } catch (error) {
+    status("Connection error: " + error.message);
   }
 }
-
 function stopCamera() {
   localStream?.getTracks().forEach(track => track.stop());
   localStream = null;
