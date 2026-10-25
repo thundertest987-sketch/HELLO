@@ -243,10 +243,16 @@ function closePeer() {
 }
 
 function switchCamera(facingMode) {
-  send("set-camera", { facingMode });
-  status("Camera switch requested.");
-}
+  if (!["user", "environment"].includes(facingMode)) return;
 
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: "set-camera",
+      data: { facingMode }
+    }));
+    status("Camera switch requested.");
+  }
+}
 function disconnect() {
   send("hangup");
   stopped = true;
