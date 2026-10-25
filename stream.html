@@ -1,64 +1,133 @@
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Private Camera Stream</title>
+  <title>Camera Lab - Phone Stream</title>
   <style>
-    body { font: 16px system-ui; max-width: 760px; margin: 32px auto; padding: 0 16px; }
-    video { width: 100%; background: #111; border-radius: 12px; }
-    input, button, select { font: inherit; padding: 10px; margin: 6px 0; }
-    #status { padding: 10px 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 700px;
+      margin: 28px auto;
+      padding: 0 16px;
+    }
+    video {
+      width: 100%;
+      background: #111;
+      border-radius: 12px;
+      margin-top: 12px;
+    }
+    input, button, select {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin: 7px 0;
+      font: inherit;
+    }
+    button { cursor: pointer; }
+    #status {
+      padding: 12px;
+      background: #f1f5f9;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
-  <h1>Private Camera Stream</h1>
-  <p>Your camera stays off until you tap Start Streaming.</p>
+  <h1>Camera Lab</h1>
+  <p>Test page for streaming your phone camera to your laptop.</p>
 
-  <input id="secret" type="password" autocomplete="off"
-         placeholder="Phone secret" style="width: min(95%, 420px)">
-  <br>
-  <label for="camera">Camera:</label>
-  <select id="camera">
-    <option value="environment">Rear camera</option>
-    <option value="user">Front camera</option>
-  </select>
-  <br>
-  <button id="start">Start Streaming</button>
-  <button id="switch" disabled>Switch Camera</button>
-  <button id="stop" disabled>Stop</button>
+  <section id="loginPanel">
+    <label for="labPassword">Lab test password</label>
+    <input id="labPassword" type="password" placeholder="Enter test password">
+    <button id="loginButton">Unlock Test Page</button>
+  </section>
 
-  <p id="status" role="status">Not streaming.</p>
+  <section id="streamPanel" hidden>
+    <p>Page unlocked. The camera is off until you tap Start Streaming.</p>
+
+    <label for="camera">Camera</label>
+    <select id="camera">
+      <option value="environment">Rear camera</option>
+      <option value="user">Front camera</option>
+    </select>
+
+    <label for="phoneSecret">Cloudflare phone credential</label>
+    <input id="phoneSecret" type="password"
+           autocomplete="off" placeholder="Enter CAMERA_PHONE_SECRET">
+
+    <button id="authorizeButton">Authenticate with Cloudflare</button>
+    <button id="startButton" disabled>Start Streaming</button>
+    <button id="switchButton" disabled>Switch Camera</button>
+    <button id="stopButton" disabled>Stop Streaming</button>
+  </section>
+
+  <p id="status" role="status">Page locked.</p>
   <video id="preview" autoplay playsinline muted></video>
 
 <script>
-const API = "https://private-camera-signal.thundertest987.workers.dev";
-const status = document.getElementById("status");
-const preview = document.getElementById("preview");
+"use strict";
 
+// TEST ONLY: visible to anyone who can inspect this public HTML.
+const LAB_TEST_PASSWORD = "CAMERA_PHONE_SECRET";
+
+const API = "https://private-camera-signal.thundertest987.workers.dev";
+const SIGNAL_URL = API.replace(/^https:/, "wss:") + "/session";
+
+const loginPanel = document.getElementById("loginPanel");
+const streamPanel = document.getElementById("streamPanel");
+const labPassword = document.getElementById("labPassword");
+const loginButton = document.getElementById("loginButton");
+const phoneSecret = document.getElementById("phoneSecret");
+const authorizeButton = document.getElementById("authorizeButton");
+const startButton = document.getElementById("startButton");
+const switchButton = document.getElementById("switchButton");
+const stopButton = document.getElementById("stopButton");
+const cameraSelect = document.getElementById("camera");
+const preview = document.getElementById("preview");
+const status = document.getElementById("status");
+
+let sessionToken = null;
 let socket = null;
-let pc = null;
-let stream = null;
+let peer = null;
+let cameraStream = null;
 let started = false;
 let pendingCandidates = [];
 
-function say(message) { status.textContent = message; }
-
-function send(type, data = null) {
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type, data }));
-  }
+function showStatus(message) {
+  status.textContent = message;
 }
 
-async function startStreaming() {
-  if (started) return;
-  started = true;
-  document.getElementById("start").disabled = true;
+// This only unlocks the UI. It is not server authentication.
+loginButton.addEventListener("click", () => {
+  if (labPassword.value !== LAB_TEST_PASSWORD) {
+    showStatus("Incorrect lab test password.");
+    return;
+  }
 
-  const input = document.getElementById("secret");
-  const secret = input.value;
-  input.value = "";
+  labPassword.value = "";
+  loginPanel.hidden = true;
+  streamPanel.hidden = false;
+  showStatus("Test page unlocked. Authenticate with Cloudflare next.");
+});
+
+// Real authorization is performed by the Cloudflare Worker.
+authorizeButton.addEventListener("click", async () => {
+  if (sessionToken) {
+    showStatus("Phone is already authenticated.");
+    return;
+  }
+
+  const secret = phoneSecret.value;
+  if (!secret) {
+    showStatus("Enter your Cloudflare phone credential.");
+    return;
+  }
+
+  authorizeButton.disabled = true;
+  showStatus("Authenticating with Cloudflare...");
 
   try {
     const response = await fetch(API + "/auth", {
@@ -66,123 +135,181 @@ async function startStreaming() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role: "phone", secret })
     });
-    if (!response.ok) throw new Error("Phone authorization failed");
-    const { token } = await response.json();
 
-    socket = new WebSocket(API.replace(/^https:/, "wss:") + "/session");
+    if (!response.ok) {
+      throw new Error("Phone authorization failed. Check the credential.");
+    }
+
+    const result = await response.json();
+    if (!result.token || !result.expiresIn) {
+      throw new Error("Unexpected authentication response.");
+    }
+
+    sessionToken = result.token;
+    phoneSecret.value = "";
+    startButton.disabled = false;
+    showStatus("Phone authenticated. Tap Start Streaming when ready.");
+  } catch (error) {
+    showStatus(error.message || "Authentication failed.");
+  } finally {
+    authorizeButton.disabled = false;
+  }
+});
+
+function sendSignal(type, data = null) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type, data }));
+  }
+}
+
+async function startStreaming() {
+  if (!sessionToken || started) return;
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showStatus("Camera access requires HTTPS and a supported browser.");
+    return;
+  }
+
+  started = true;
+  startButton.disabled = true;
+  showStatus("Connecting to the laptop...");
+
+  try {
+    socket = new WebSocket(SIGNAL_URL);
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "auth", token }));
+      socket.send(JSON.stringify({
+        type: "auth",
+        token: sessionToken
+      }));
     };
 
     socket.onmessage = async event => {
-      const msg = JSON.parse(event.data);
-
-      if (msg.type === "ready") {
-        say("Authorized. Waiting for the laptop viewer.");
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        showStatus("Invalid signaling message.");
+        return;
       }
 
-      if (msg.type === "peer-ready" && msg.role === "viewer") {
-        say("Laptop connected. Preparing camera...");
-      }
-
-      if (msg.type === "offer") {
-        try {
-          await answerOffer(msg.data);
-        } catch (error) {
-          say("Could not establish video: " + error.message);
+      try {
+        if (message.type === "ready") {
+          showStatus("Authorized. Waiting for the laptop viewer.");
         }
-      }
 
-      if (msg.type === "ice" && msg.data && pc) {
-        try {
-          if (pc.remoteDescription) {
-            await pc.addIceCandidate(msg.data);
+        if (message.type === "peer-ready") {
+          showStatus("Laptop connected. Waiting for its WebRTC offer.");
+        }
+
+        if (message.type === "offer") {
+          await answerOffer(message.data);
+        }
+
+        if (message.type === "ice" && message.data && peer) {
+          if (peer.remoteDescription) {
+            await peer.addIceCandidate(message.data);
           } else {
-            pendingCandidates.push(msg.data);
+            pendingCandidates.push(message.data);
           }
-        } catch {}
-      }
+        }
 
-      if (msg.type === "hangup" || msg.type === "peer-left") {
-        say("Laptop disconnected. Stop and restart to reconnect.");
+        if (message.type === "peer-left") {
+          showStatus("Laptop disconnected. Stop and restart to reconnect.");
+        }
+
+        if (message.type === "hangup") {
+          showStatus("Laptop ended the session.");
+        }
+      } catch (error) {
+        showStatus("Signaling error: " + error.message);
       }
     };
 
-    socket.onerror = () => say("Connection error. Check the Worker.");
+    socket.onerror = () => showStatus("Signaling connection failed.");
     socket.onclose = () => {
-      if (started) say("Signaling connection closed. Stop and restart.");
+      if (started) showStatus("Signaling connection closed.");
     };
   } catch (error) {
-    say(error.message || "Could not start.");
+    showStatus("Could not connect: " + error.message);
     cleanup();
   }
 }
 
 async function answerOffer(offer) {
-  // Ask for camera access only after Start Streaming was tapped.
   if (!started) return;
 
-  if (!stream) {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: document.getElementById("camera").value },
+  // Camera permission is requested only after Start Streaming.
+  if (!cameraStream) {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: cameraSelect.value },
       audio: false
     });
-    preview.srcObject = stream;
+    preview.srcObject = cameraStream;
   }
 
-  if (pc) pc.close();
+  if (peer) peer.close();
 
-  pc = new RTCPeerConnection({
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  peer = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" }
+    ]
   });
 
-  for (const track of stream.getTracks()) {
-    pc.addTrack(track, stream);
-  }
+  cameraStream.getTracks().forEach(track => peer.addTrack(track, cameraStream));
 
-  pc.onicecandidate = event => {
-    if (event.candidate) send("ice", event.candidate);
+  peer.onicecandidate = event => {
+    if (event.candidate) sendSignal("ice", event.candidate);
   };
 
-  await pc.setRemoteDescription(offer);
+  peer.onconnectionstatechange = () => {
+    if (peer?.connectionState === "connected") {
+      showStatus("Streaming live to the laptop.");
+    } else if (peer?.connectionState === "failed") {
+      showStatus("WebRTC failed. A TURN relay may be required.");
+    }
+  };
+
+  await peer.setRemoteDescription(offer);
 
   for (const candidate of pendingCandidates) {
-    try { await pc.addIceCandidate(candidate); } catch {}
+    try { await peer.addIceCandidate(candidate); } catch {}
   }
   pendingCandidates = [];
 
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  send("answer", pc.localDescription);
+  const answer = await peer.createAnswer();
+  await peer.setLocalDescription(answer);
+  sendSignal("answer", peer.localDescription);
 
-  document.getElementById("stop").disabled = false;
-  document.getElementById("switch").disabled = false;
-  say("Streaming is active. Keep this page open to maintain the connection.");
+  stopButton.disabled = false;
+  switchButton.disabled = false;
+  showStatus("Camera active. Establishing video connection...");
 }
 
 async function switchCamera() {
-  if (!started || !stream || !pc) return;
+  if (!started || !cameraStream || !peer) return;
 
-  const select = document.getElementById("camera");
-  select.value = select.value === "environment" ? "user" : "environment";
+  const facing = cameraSelect.value === "environment" ? "user" : "environment";
 
   try {
-    const next = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: select.value },
+    const nextStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing },
       audio: false
     });
 
-    const newTrack = next.getVideoTracks()[0];
-    const sender = pc.getSenders().find(s => s.track?.kind === "video");
+    const nextTrack = nextStream.getVideoTracks()[0];
+    const sender = peer.getSenders().find(s => s.track?.kind === "video");
 
-    if (sender) await sender.replaceTrack(newTrack);
+    if (!sender) throw new Error("Video sender unavailable.");
+    await sender.replaceTrack(nextTrack);
 
-    for (const track of stream.getTracks()) track.stop();
-    stream = next;
-    preview.srcObject = stream;
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = nextStream;
+    cameraSelect.value = facing;
+    preview.srcObject = cameraStream;
+    showStatus("Camera switched.");
   } catch (error) {
-    say("Unable to switch camera: " + error.message);
+    showStatus("Could not switch camera: " + error.message);
   }
 }
 
@@ -190,27 +317,29 @@ function cleanup() {
   started = false;
 
   if (socket?.readyState === WebSocket.OPEN) {
-    send("hangup");
+    sendSignal("hangup");
     socket.close();
   }
-  if (pc) pc.close();
-  if (stream) stream.getTracks().forEach(track => track.stop());
+  if (peer) peer.close();
+  if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
 
   socket = null;
-  pc = null;
-  stream = null;
+  peer = null;
+  cameraStream = null;
   pendingCandidates = [];
   preview.srcObject = null;
 
-  document.getElementById("start").disabled = false;
-  document.getElementById("switch").disabled = true;
-  document.getElementById("stop").disabled = true;
-  say("Stopped. Camera tracks released.");
+  startButton.disabled = !sessionToken;
+  switchButton.disabled = true;
+  stopButton.disabled = true;
+  showStatus("Stopped. Camera tracks released.");
 }
 
-document.getElementById("start").addEventListener("click", startStreaming);
-document.getElementById("switch").addEventListener("click", switchCamera);
-document.getElementById("stop").addEventListener("click", cleanup);
+startButton.addEventListener("click", startStreaming);
+switchButton.addEventListener("click", switchCamera);
+stopButton.addEventListener("click", cleanup);
+
+window.addEventListener("pagehide", cleanup);
 </script>
 </body>
 </html>
