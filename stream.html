@@ -4,14 +4,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Hello...</title>
+  <title>Camera Lab — Streamer</title>
   <style>
     body {
       max-width: 850px;
       margin: 40px auto;
       padding: 20px;
       font-family: Arial, sans-serif;
+      color: #111;
     }
+
     button {
       width: 100%;
       padding: 15px;
@@ -23,7 +25,13 @@
       font-size: 16px;
       cursor: pointer;
     }
-    button:disabled { background: #ddd; color: #888; }
+
+    button:disabled {
+      background: #ddd;
+      color: #888;
+      cursor: not-allowed;
+    }
+
     #status {
       padding: 15px;
       margin-top: 20px;
@@ -34,21 +42,38 @@
   </style>
 </head>
 <body>
-  <h1>Hello...</h1>
-  <p>Authentication runs automatically. The camera remains off until you start streaming.</p>
+  <h1>Camera Lab — Streamer</h1>
+
+  <p>
+    Authentication runs automatically. The camera stays off until
+    you press Start Streaming.
+  </p>
 
   <button id="start" disabled>Start Streaming</button>
   <button id="stop" disabled>Stop Streaming</button>
-  <div id="status">Authenticating…</div>
+
+  <div id="status" role="status" aria-live="polite">
+    Authenticating…
+  </div>
 
 <script>
 "use strict";
 
 const WORKER_URL =
   "https://private-camera-signal.thundertest987.workers.dev";
+
 const PHONE_SECRET = "CAMERA_PHONE_SECRET";
 const AUTH_URL = WORKER_URL + "/auth";
-const SIGNAL_URL = WORKER_URL.replace(/^https:/, "wss:") + "/session";
+const SIGNAL_URL =
+  WORKER_URL.replace(/^https:/, "wss:") + "/session";
+
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" }
+];
+
+const startButton = document.getElementById("start");
+const stopButton = document.getElementById("stop");
+const statusBox = document.getElementById("status");
 
 let token = null;
 let socket = null;
@@ -58,10 +83,7 @@ let pendingOffer = null;
 let started = false;
 let stopped = false;
 let facingMode = "user";
-
-const startButton = document.getElementById("start");
-const stopButton = document.getElementById("stop");
-const statusBox = document.getElementById("status");
+let authTimer = null;
 
 function status(message) {
   statusBox.textContent = message;
@@ -72,14 +94,20 @@ function send(message) {
     status("Signaling connection is not ready.");
     return false;
   }
+
   socket.send(JSON.stringify(message));
   return true;
 }
 
+/* Authenticate against the existing Cloudflare Worker. */
 async function authenticate() {
+  status("Authenticating phone…");
+
   const response = await fetch(AUTH_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify({
       role: "phone",
       secret: PHONE_SECRET
@@ -87,34 +115,64 @@ async function authenticate() {
   });
 
   if (!response.ok) {
-    throw new Error("Phone authentication failed: HTTP " + response.status);
+    throw new Error(
+      "Phone authentication failed: HTTP " + response.status
+    );
   }
 
   const data = await response.json();
-  if (!data.token) throw new Error("No token returned by Worker.");
+
+  if (!data.token) {
+    throw new Error("The Worker did not return an authentication token.");
+  }
+
   token = data.token;
 }
 
+/*
+ * Connect to the Durable Object WebSocket.
+ *
+ * The Worker must send an authentication acknowledgement after
+ * accepting the token. Supported acknowledgements are listed below.
+ */
 function connectSignaling() {
   return new Promise((resolve, reject) => {
     socket = new WebSocket(SIGNAL_URL);
     let authenticated = false;
+    let settled = false;
 
-    const timeout = setTimeout(() => {
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(authTimer);
+      reject(error);
+    }
+
+    authTimer = setTimeout(() => {
       if (!authenticated) {
+        fail(new Error(
+          "WebSocket authentication timed out. Check the Worker acknowledgement."
+        ));
         socket.close();
-        reject(new Error("WebSocket authentication timed out."));
       }
     }, 15000);
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "auth", token }));
+      socket.send(JSON.stringify({
+        type: "auth",
+        token
+      }));
     };
 
     socket.onmessage = async event => {
       let message;
-      try { message = JSON.parse(event.data); }
-      catch { return; }
+
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        status("Worker returned a non-JSON message.");
+        return;
+      }
 
       if (!authenticated) {
         if (
@@ -124,14 +182,21 @@ function connectSignaling() {
           message.ok === true
         ) {
           authenticated = true;
-          clearTimeout(timeout);
+          settled = true;
+          clearTimeout(authTimer);
+
           startButton.disabled = false;
-          status("Authenticated. Tap Start Streaming to turn on the camera.");
+          status("Authenticated. Press Start Streaming to turn on the camera.");
           resolve();
-        } else if (message.type === "error" || message.error) {
-          clearTimeout(timeout);
-          reject(new Error(message.error || "WebSocket authentication failed."));
+          return;
         }
+
+        if (message.type === "error" || message.error) {
+          fail(new Error(
+            message.error || "WebSocket authentication failed."
+          ));
+        }
+
         return;
       }
 
@@ -140,54 +205,75 @@ function connectSignaling() {
 
     socket.onerror = () => {
       if (!authenticated) {
-        clearTimeout(timeout);
-        reject(new Error("Could not connect to Worker WebSocket."));
+        fail(new Error("Could not connect to the Worker WebSocket."));
       }
     };
 
     socket.onclose = () => {
+      clearTimeout(authTimer);
+
       if (!stopped) {
         startButton.disabled = true;
-        status("Signaling connection closed. Reload the page to reconnect.");
+        stopButton.disabled = true;
+        stopCamera();
+        status("Signaling connection closed. Reload to reconnect.");
       }
     };
   });
 }
 
+/* Create the WebRTC peer connection. */
 function createPeer() {
-  if (peer) peer.close();
+  closePeer();
 
   peer = new RTCPeerConnection({
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" }
-    ]
+    iceServers: ICE_SERVERS
   });
 
   peer.onicecandidate = event => {
     if (event.candidate) {
-      send({ type: "ice", candidate: event.candidate });
+      send({
+        type: "ice",
+        candidate: event.candidate
+      });
     }
   };
 
   peer.onconnectionstatechange = () => {
     if (!peer) return;
-    if (peer.connectionState === "connected") {
-      status("Streaming connection established.");
-    } else if (peer.connectionState === "failed") {
-      status("Connection failed. Your network may require a TURN server.");
+
+    switch (peer.connectionState) {
+      case "connected":
+        status("Connected. Streaming is active.");
+        break;
+
+      case "failed":
+        status(
+          "WebRTC connection failed. A TURN server may be needed."
+        );
+        break;
+
+      case "disconnected":
+        status("Viewer connection interrupted.");
+        break;
     }
   };
 
   return peer;
 }
 
+/* Start camera only after the user presses the button. */
 async function startCamera() {
-  if (started) return;
+  if (started || !token) return;
 
   startButton.disabled = true;
   status("Requesting camera permission…");
 
   try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("Camera access is unavailable in this browser.");
+    }
+
     localStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -205,40 +291,60 @@ async function startCamera() {
       pendingOffer = null;
       await answerOffer(offer);
     } else {
-      status("Camera is on. Waiting for viewer connection…");
+      status("Camera is on. Waiting for the viewer's offer…");
     }
   } catch (error) {
-    stopTracks();
+    stopCamera();
     startButton.disabled = false;
-    status("Camera error: " + error.message);
+    status("Could not start camera: " + error.message);
   }
 }
 
+/*
+ * Extract and validate an offer.
+ * A valid SDP string normally begins with "v=0".
+ */
+function extractOffer(message) {
+  const candidates = [
+    message?.offer,
+    message?.description,
+    message?.payload?.offer,
+    message?.data?.offer,
+    message
+  ];
 
+  for (const candidate of candidates) {
+    if (
+      candidate &&
+      candidate.type === "offer" &&
+      typeof candidate.sdp === "string" &&
+      candidate.sdp.startsWith("v=")
+    ) {
+      return {
+        type: "offer",
+        sdp: candidate.sdp
+      };
+    }
+  }
+
+  return null;
+}
+
+/* Accept an offer and return an answer. */
 async function answerOffer(message) {
-  // Accept common WebRTC offer message formats.
-  const offer =
-    message?.offer ??
-    message?.description ??
-    message?.payload?.offer ??
-    message?.data?.offer ??
-    message;
+  const offer = extractOffer(message);
 
-  if (
-    !offer ||
-    typeof offer.sdp !== "string" ||
-    !offer.sdp.startsWith("v=")
-  ) {
-    console.error("Invalid offer received:", message);
+  if (!offer) {
+    console.error("Invalid offer received from Worker:", message);
     status(
-      "Invalid WebRTC offer received. Check the Worker message format."
+      "Invalid WebRTC offer received. The Worker must forward the viewer's offer object."
     );
     return;
   }
 
   if (!localStream) {
     pendingOffer = offer;
-    status("Viewer is ready. Tap Start Streaming to continue.");
+    status("Viewer offer received. Press Start Streaming to continue.");
     return;
   }
 
@@ -246,15 +352,16 @@ async function answerOffer(message) {
     const pc = peer || createPeer();
 
     for (const track of localStream.getTracks()) {
-      if (!pc.getSenders().some(sender => sender.track === track)) {
+      const exists = pc.getSenders().some(
+        sender => sender.track === track
+      );
+
+      if (!exists) {
         pc.addTrack(track, localStream);
       }
     }
 
-    await pc.setRemoteDescription({
-      type: "offer",
-      sdp: offer.sdp
-    });
+    await pc.setRemoteDescription(offer);
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
@@ -267,76 +374,102 @@ async function answerOffer(message) {
       }
     });
 
-    status("Answer sent. Connecting to viewer…");
+    status("Answer sent. Establishing video connection…");
   } catch (error) {
-    console.error("WebRTC offer error:", error, message);
-    status("WebRTC offer error: " + error.message);
+    console.error("Offer processing failed:", error, message);
+    status("WebRTC error: " + error.message);
   }
 }
 
-
-  await pc.setRemoteDescription(new RTCSessionDescription(offer));
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  send({ type: "answer", answer: pc.localDescription });
-  status("Camera is on. Connecting to viewer…");
-}
-
+/* Switch the phone's camera when commanded by the viewer. */
 async function switchCamera(mode) {
-  if (!["user", "environment"].includes(mode)) return;
+  if (mode !== "user" && mode !== "environment") return;
+
   facingMode = mode;
 
   if (!started || !localStream) {
-    status("Camera preference saved for when streaming starts.");
+    status(
+      "Camera preference saved. Start streaming to apply the change."
+    );
     return;
   }
 
+  let replacementStream;
+
   try {
-    const newStream = await navigator.mediaDevices.getUserMedia({
+    replacementStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: facingMode } }
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
     });
 
-    const newTrack = newStream.getVideoTracks()[0];
-    const oldStream = localStream;
-    localStream = newStream;
+    const newTrack = replacementStream.getVideoTracks()[0];
+
+    if (!newTrack) {
+      throw new Error("No video track was returned by the camera.");
+    }
 
     if (peer) {
       const sender = peer.getSenders().find(
-        item => item.track && item.track.kind === "video"
+        item => item.track?.kind === "video"
       );
 
-      if (sender) await sender.replaceTrack(newTrack);
-      else peer.addTrack(newTrack, newStream);
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+      } else {
+        peer.addTrack(newTrack, replacementStream);
+      }
     }
 
-    oldStream.getTracks().forEach(track => track.stop());
-    status("Switched camera.");
+    const previousStream = localStream;
+    localStream = replacementStream;
+    previousStream.getTracks().forEach(track => track.stop());
+
+    status(
+      "Switched to " +
+      (facingMode === "user" ? "front" : "back") +
+      " camera."
+    );
   } catch (error) {
+    if (replacementStream) {
+      replacementStream.getTracks().forEach(track => track.stop());
+    }
+
     status("Camera switch failed: " + error.message);
   }
 }
 
+/* Handle messages forwarded by the Worker. */
 async function handleSignal(message) {
   try {
     switch (message.type) {
       case "offer":
-        await answerOffer(message.offer || message);
+        await answerOffer(message);
         break;
 
-      case "ice":
-        if (peer && message.candidate) {
-          await peer.addIceCandidate(new RTCIceCandidate(message.candidate));
+      case "ice": {
+        const candidate = message.candidate;
+
+        if (peer && candidate) {
+          await peer.addIceCandidate(
+            new RTCIceCandidate(candidate)
+          );
         }
         break;
+      }
 
       case "set-camera":
       case "camera-facing":
-        await switchCamera(message.facingMode || message.camera);
+        await switchCamera(
+          message.facingMode || message.camera
+        );
         break;
 
       case "peer-ready":
-        status("Viewer is ready.");
+        status("Viewer is ready. Waiting for a valid offer…");
         break;
 
       case "hangup":
@@ -349,32 +482,41 @@ async function handleSignal(message) {
         break;
     }
   } catch (error) {
-    status("Connection error: " + error.message);
+    console.error("Signaling message handling failed:", error, message);
+    status("Signaling error: " + error.message);
   }
 }
 
-function stopTracks() {
+function stopCamera() {
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
     localStream = null;
   }
+
+  started = false;
+  stopButton.disabled = true;
 }
 
 function closePeer() {
   if (peer) {
+    peer.onicecandidate = null;
+    peer.onconnectionstatechange = null;
     peer.close();
     peer = null;
   }
 }
 
+/* Explicitly stop the stream and release the camera. */
 function stopStreaming() {
   send({ type: "hangup" });
+
   closePeer();
-  stopTracks();
-  started = false;
+  stopCamera();
   pendingOffer = null;
-  stopButton.disabled = true;
-  startButton.disabled = !socket || socket.readyState !== WebSocket.OPEN;
+
+  startButton.disabled =
+    !token || !socket || socket.readyState !== WebSocket.OPEN;
+
   status("Streaming stopped. Camera is off.");
 }
 
@@ -384,15 +526,20 @@ stopButton.addEventListener("click", stopStreaming);
 window.addEventListener("pagehide", () => {
   stopped = true;
   closePeer();
-  stopTracks();
-  if (socket) socket.close();
+  stopCamera();
+
+  if (socket) {
+    socket.close();
+  }
 });
 
+/* Initialize authentication and signaling. */
 async function initialize() {
   try {
     await authenticate();
     await connectSignaling();
   } catch (error) {
+    console.error(error);
     status(error.message);
   }
 }
