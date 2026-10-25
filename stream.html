@@ -214,20 +214,66 @@ async function startCamera() {
   }
 }
 
-async function answerOffer(offer) {
+
+async function answerOffer(message) {
+  // Accept common WebRTC offer message formats.
+  const offer =
+    message?.offer ??
+    message?.description ??
+    message?.payload?.offer ??
+    message?.data?.offer ??
+    message;
+
+  if (
+    !offer ||
+    typeof offer.sdp !== "string" ||
+    !offer.sdp.startsWith("v=")
+  ) {
+    console.error("Invalid offer received:", message);
+    status(
+      "Invalid WebRTC offer received. Check the Worker message format."
+    );
+    return;
+  }
+
   if (!localStream) {
     pendingOffer = offer;
     status("Viewer is ready. Tap Start Streaming to continue.");
     return;
   }
 
-  const pc = peer || createPeer();
+  try {
+    const pc = peer || createPeer();
 
-  for (const track of localStream.getTracks()) {
-    if (!pc.getSenders().some(sender => sender.track === track)) {
-      pc.addTrack(track, localStream);
+    for (const track of localStream.getTracks()) {
+      if (!pc.getSenders().some(sender => sender.track === track)) {
+        pc.addTrack(track, localStream);
+      }
     }
+
+    await pc.setRemoteDescription({
+      type: "offer",
+      sdp: offer.sdp
+    });
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    send({
+      type: "answer",
+      answer: {
+        type: pc.localDescription.type,
+        sdp: pc.localDescription.sdp
+      }
+    });
+
+    status("Answer sent. Connecting to viewer…");
+  } catch (error) {
+    console.error("WebRTC offer error:", error, message);
+    status("WebRTC offer error: " + error.message);
   }
+}
+
 
   await pc.setRemoteDescription(new RTCSessionDescription(offer));
   const answer = await pc.createAnswer();
