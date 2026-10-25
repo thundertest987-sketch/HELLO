@@ -1,112 +1,347 @@
 
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Private Camera Viewer</title>
+  <title>Viewer</title>
   <style>
-    body { font: 16px system-ui; max-width: 760px; margin: 32px auto; padding: 0 16px; }
-    video { width: 100%; background: #111; border-radius: 12px; }
-    input, button { font: inherit; padding: 10px; margin: 6px 0; }
-    #status { padding: 10px 0; }
+    body {
+      max-width: 950px;
+      margin: 35px auto;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      color: #111;
+    }
+    button {
+      padding: 13px 18px;
+      margin: 5px 5px 10px 0;
+      border: 0;
+      border-radius: 6px;
+      background: #111;
+      color: white;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #ddd;
+      color: #888;
+      cursor: not-allowed;
+    }
+    video {
+      width: 100%;
+      max-height: 70vh;
+      background: #111;
+      border-radius: 12px;
+      margin-top: 15px;
+    }
+    #status {
+      padding: 15px;
+      background: #eef3f8;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
   </style>
 </head>
 <body>
-  <h1>Private Camera Viewer</h1>
-  <p>Enter the viewer secret configured for your Worker. Do not share it.</p>
-  <input id="secret" type="password" autocomplete="off"
-         placeholder="Viewer secret" style="width: min(95%, 420px)">
-  <button id="connect">Connect</button>
-  <button id="stop" disabled>Disconnect</button>
-  <p id="status" role="status">Disconnected</p>
-  <video id="video" autoplay playsinline></video>
+  <h1>VIEWER</h1>
+  <p>Viewer authentication runs automatically. Camera access starts only when the streamer presses Start Streaming.</p>
+
+  <button id="front" disabled>Switch to Front Camera</button>
+  <button id="back" disabled>Switch to Back Camera</button>
+  <button id="disconnect" disabled>Disconnect</button>
+
+  <div id="status" role="status" aria-live="polite">
+    Authenticating viewer…
+  </div>
+
+  <video id="remoteVideo" autoplay playsinline controls></video>
 
 <script>
-const API = "https://private-camera-signal.thundertest987.workers.dev";
-const status = document.getElementById("status");
-const video = document.getElementById("video");
-let socket, pc;
+"use strict";
 
-function say(message) { status.textContent = message; }
+const WORKER_URL =
+  "https://private-camera-signal.thundertest987.workers.dev";
+const AUTH_URL = WORKER_URL + "/auth";
+const SIGNAL_URL = WORKER_URL.replace(/^https:/, "wss:") + "/session";
 
-async function connect() {
-  document.getElementById("connect").disabled = true;
-  const secretInput = document.getElementById("secret");
-  const secret = secretInput.value;
-  secretInput.value = "";
+/* Use a disposable viewer credential, not a permanent secret. */
+const VIEWER_SECRET = "CAMERA_VIEWER_SECRET";
 
-  try {
-    const response = await fetch(API + "/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: "viewer", secret })
-    });
-    if (!response.ok) throw new Error("Viewer authorization failed");
-    const { token } = await response.json();
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" }
+];
 
-    socket = new WebSocket(API.replace(/^https:/, "wss:") + "/session");
-    socket.onopen = () => socket.send(JSON.stringify({ type: "auth", token }));
-    socket.onmessage = async event => {
-      const msg = JSON.parse(event.data);
-      if (msg.type === "ready") {
-        say("Authorized. Waiting for your phone.");
-        document.getElementById("stop").disabled = false;
+const statusBox = document.getElementById("status");
+const remoteVideo = document.getElementById("remoteVideo");
+const frontButton = document.getElementById("front");
+const backButton = document.getElementById("back");
+const disconnectButton = document.getElementById("disconnect");
+
+let token = null;
+let socket = null;
+let peer = null;
+let stopped = false;
+let remoteStream = new MediaStream();
+
+remoteVideo.srcObject = remoteStream;
+
+function status(text) {
+  statusBox.textContent = text;
+}
+
+function send(message) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    status("Signaling connection is not ready.");
+    return false;
+  }
+  socket.send(JSON.stringify(message));
+  return true;
+}
+
+async function authenticate() {
+  if (
+    !VIEWER_SECRET.trim() ||
+    VIEWER_SECRET === "CAMERA_VIEWER_SECRET"
+  ) {
+    throw new Error("Configure the disposable viewer credential in viewer.html.");
+  }
+
+  const response = await fetch(AUTH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      role: "viewer",
+      secret: VIEWER_SECRET
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error("Viewer authentication failed: HTTP " + response.status);
+  }
+
+  const data = await response.json();
+  if (!data.token) throw new Error("No authentication token was returned.");
+  token = data.token;
+}
+
+function connectSignaling() {
+  return new Promise((resolve, reject) => {
+    socket = new WebSocket(SIGNAL_URL);
+    let authenticated = false;
+
+    const timeout = setTimeout(() => {
+      if (!authenticated) {
+        reject(new Error("Signaling authentication timed out."));
+        socket.close();
       }
-      if (msg.type === "peer-ready") {
-        await makeOffer();
-      }
-      if (msg.type === "answer" && pc) {
-        await pc.setRemoteDescription(msg.data);
-      }
-      if (msg.type === "ice" && pc && msg.data) {
-        try { await pc.addIceCandidate(msg.data); } catch {}
-      }
-      if (msg.type === "peer-left") say("Phone disconnected.");
-      if (msg.type === "hangup") say("Phone stopped streaming.");
+    }, 15000);
+
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: "auth", token }));
     };
-    socket.onerror = () => say("Connection error. Check your Worker.");
-    socket.onclose = () => say("Disconnected.");
+
+    socket.onmessage = async event => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (!authenticated) {
+        if (
+          message.type === "authenticated" ||
+          message.type === "auth_ok" ||
+          message.type === "ready" ||
+          message.ok === true
+        ) {
+          authenticated = true;
+          clearTimeout(timeout);
+          frontButton.disabled = false;
+          backButton.disabled = false;
+          disconnectButton.disabled = false;
+          status("Viewer authenticated. Waiting for the streamer…");
+          resolve();
+        } else if (message.type === "error" || message.error) {
+          clearTimeout(timeout);
+          reject(new Error(message.error || "WebSocket authentication failed."));
+        }
+        return;
+      }
+
+      await handleSignal(message);
+    };
+
+    socket.onerror = () => {
+      if (!authenticated) {
+        clearTimeout(timeout);
+        reject(new Error("Could not connect to signaling service."));
+      }
+    };
+
+    socket.onclose = () => {
+      if (!stopped) {
+        status("Signaling connection closed. Reload to reconnect.");
+        frontButton.disabled = true;
+        backButton.disabled = true;
+        disconnectButton.disabled = true;
+      }
+    };
+  });
+}
+
+function createPeer() {
+  if (peer) peer.close();
+
+  peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+  peer.ontrack = event => {
+    if (event.streams && event.streams[0]) {
+      remoteVideo.srcObject = event.streams[0];
+    } else {
+      remoteStream.addTrack(event.track);
+      remoteVideo.srcObject = remoteStream;
+    }
+
+    remoteVideo.play().catch(() => {
+      status("Stream received. Press Play on the video if it does not start automatically.");
+    });
+  };
+
+  peer.onicecandidate = event => {
+    if (event.candidate) {
+      send({ type: "ice", candidate: event.candidate });
+    }
+  };
+
+  peer.onconnectionstatechange = () => {
+    if (!peer) return;
+
+    if (peer.connectionState === "connected") {
+      status("Connected. Live stream received.");
+    } else if (peer.connectionState === "failed") {
+      status("Connection failed. A TURN server may be required.");
+    } else if (peer.connectionState === "disconnected") {
+      status("Stream connection interrupted.");
+    }
+  };
+
+  return peer;
+}
+
+async function startOffer() {
+  const pc = createPeer();
+
+  /*
+   * Reserve a video transceiver so the streamer can send video
+   * after its user presses Start Streaming.
+   */
+  pc.addTransceiver("video", { direction: "recvonly" });
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  send({ type: "offer", offer: pc.localDescription });
+  status("Connection offer sent. Waiting for streamer…");
+}
+
+async function handleSignal(message) {
+  try {
+    switch (message.type) {
+      case "peer-ready":
+        if (!peer) await startOffer();
+        break;
+
+      case "answer":
+        if (peer) {
+          await peer.setRemoteDescription(
+            new RTCSessionDescription(message.answer || message)
+          );
+          status("Answer received. Establishing video connection…");
+        }
+        break;
+
+      case "ice":
+        if (peer && message.candidate) {
+          await peer.addIceCandidate(
+            new RTCIceCandidate(message.candidate)
+          );
+        }
+        break;
+
+      case "hangup":
+        closePeer();
+        status("Streamer stopped the connection.");
+        break;
+
+      case "error":
+        status("Signaling error: " + (message.error || "Unknown error"));
+        break;
+    }
   } catch (error) {
-    say(error.message || "Could not connect.");
-    document.getElementById("connect").disabled = false;
+    status("WebRTC error: " + error.message);
   }
 }
 
-async function makeOffer() {
-  if (pc) pc.close();
-  pc = new RTCPeerConnection({
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+function chooseCamera(facingMode) {
+  send({
+    type: "set-camera",
+    facingMode
   });
-  pc.ontrack = event => { video.srcObject = event.streams[0]; };
-  pc.onicecandidate = event => {
-    if (event.candidate && socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: "ice", data: event.candidate }));
-    }
-  };
-  pc.addTransceiver("video", { direction: "recvonly" });
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  socket.send(JSON.stringify({ type: "offer", data: pc.localDescription }));
-  say("Offer sent. Waiting for phone to start streaming.");
+
+  status(
+    "Camera switch requested: " +
+    (facingMode === "user" ? "front" : "back") +
+    ". The streamer must be connected and streaming."
+  );
+}
+
+function closePeer() {
+  if (peer) {
+    peer.ontrack = null;
+    peer.onicecandidate = null;
+    peer.close();
+    peer = null;
+  }
+
+  remoteStream = new MediaStream();
+  remoteVideo.srcObject = remoteStream;
 }
 
 function disconnect() {
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "hangup" }));
-    socket.close();
-  }
-  if (pc) pc.close();
-  pc = null;
-  socket = null;
-  video.srcObject = null;
-  document.getElementById("connect").disabled = false;
-  document.getElementById("stop").disabled = true;
-  say("Disconnected.");
+  send({ type: "hangup" });
+  closePeer();
+  stopped = true;
+
+  if (socket) socket.close();
+
+  frontButton.disabled = true;
+  backButton.disabled = true;
+  disconnectButton.disabled = true;
+  status("Disconnected.");
 }
 
-document.getElementById("connect").onclick = connect;
-document.getElementById("stop").onclick = disconnect;
+frontButton.addEventListener("click", () => chooseCamera("user"));
+backButton.addEventListener("click", () => chooseCamera("environment"));
+disconnectButton.addEventListener("click", disconnect);
+
+window.addEventListener("pagehide", () => {
+  stopped = true;
+  closePeer();
+  if (socket) socket.close();
+});
+
+async function initialize() {
+  try {
+    await authenticate();
+    await connectSignaling();
+  } catch (error) {
+    status(error.message);
+  }
+}
+
+initialize();
 </script>
 </body>
 </html>
