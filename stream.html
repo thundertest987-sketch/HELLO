@@ -4,27 +4,82 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Camera Streamer</title>
+  <title>Hello...</title>
   <style>
-    body {
-      max-width: 850px;
-      margin: 40px auto;
-      padding: 20px;
-      font-family: Arial, sans-serif;
-      color: #111;
-    }
+    
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  box-sizing: border-box;
+  font-family: Arial, sans-serif;
+  background: #f3f5f8;
+  color: #202124;
+}
 
-    #status {
-      padding: 15px;
-      margin-top: 20px;
-      border-radius: 8px;
-      background: #eef3f8;
-      overflow-wrap: anywhere;
-    }
+.popup {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  padding: 22px;
+  background: white;
+  border: 1px solid #e2e5e9;
+  border-radius: 14px;
+  box-shadow: 0 8px 30px #00000012;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.app-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: #e8eefc;
+  color: #234ea5;
+}
+
+.live-indicator {
+  margin-left: auto;
+  font-size: 11px;
+  color: #267447;
+}
+
+h2 {
+  margin-top: 24px;
+  font-size: 20px;
+}
+
+#status {
+  color: #505866;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+button {
+  width: 100%;
+  padding: 11px;
+  margin-top: 14px;
+  border: 0;
+  border-radius: 8px;
+  background: #202124;
+  color: white;
+  cursor: pointer;
+}
   </style>
 </head>
 <body>
-  <h1>Camera Streamer</h1>
+  <h1>Hello...</h1>
   <p>
     Authentication and camera startup run automatically.
     The camera turns off when this page is closed.
