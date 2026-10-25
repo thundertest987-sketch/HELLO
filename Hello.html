@@ -450,11 +450,11 @@
         if (!peer) return;
 
         if (peer.connectionState === "connected") {
-          setStatus("v.", true);
+          setStatus("Smile.", true);
         } else if (peer.connectionState === "failed") {
-          setStatus("n.", true);
+          setStatus("No Problem.", true);
         } else if (peer.connectionState === "disconnected") {
-          setStatus("e.", true);
+          setStatus("Easy.", true);
         }
       };
     }
